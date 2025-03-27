@@ -1,0 +1,1 @@
+{"batch_size": 10, "process_topics": true, "max_retries": 3, "delay_between": 1, "max_tweets": 100, "skip_short_replies": true, "min_word_count": 3, "process_engagement": true}
