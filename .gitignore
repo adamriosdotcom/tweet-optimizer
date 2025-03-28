@@ -24,7 +24,6 @@ wheels/
 venv/
 ENV/
 env/
-.env
 
 # IDE
 .idea/
@@ -35,14 +34,24 @@ env/
 # Logs
 *.log
 logs/
-log/
+*.log.*
 
-# Database
-*.db
-*.sqlite3
+# Data
+data/
+*.csv
+*.json
+*.pkl
+*.joblib
+
+# Environment variables
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
 
 # Local development
-.DS_Store
 .env.local
 .env.development.local
 .env.test.local

@@ -7,7 +7,6 @@ Tweet collection script with better error handling and database integration.
 from apify_client import ApifyClient
 import pandas as pd
 import numpy as np
-import sqlite3
 import datetime
 import logging
 from database import TwitterDatabase
@@ -123,38 +122,13 @@ for username in usernames:
                 for col in list_columns:
                     tweets[col] = tweets[col].apply(lambda x: ','.join(map(str, x)) if isinstance(x, list) else x)
                 
-                # Create or update database schema
-                columns = tweets.columns
-                col_defs = ['uniqueid TEXT PRIMARY KEY']
-                for col in columns:
-                    if col == "uniqueid":
-                        continue
-                    col_defs.append(f'"{col}" TEXT')
+                # Convert DataFrame to list of dictionaries
+                records = tweets.to_dict('records')
                 
-                create_table_query = "CREATE TABLE IF NOT EXISTS tweets (\n" + ",\n".join(col_defs) + "\n);"
-                
-                conn = sqlite3.connect('tweets.db')
-                cursor = conn.cursor()
-                cursor.execute(create_table_query)
-                conn.commit()
-                
-                # Add new columns if needed
-                cursor.execute("PRAGMA table_info(tweets);")
-                existing_columns = [info[1] for info in cursor.fetchall()]
-                
-                for col in tweets.columns:
-                    if col not in existing_columns:
-                        alter_query = f'ALTER TABLE tweets ADD COLUMN "{col}" TEXT;'
-                        print(f"Adding column: {col}")
-                        cursor.execute(alter_query)
-                        conn.commit()
-                
-                # Insert data
-                tweets.to_sql('tweets', conn, if_exists='append', index=False)
-                rows_added += len(tweets)
-                logger.info(f"Added {len(tweets)} tweets for {username}")
-                
-                conn.close()
+                # Insert into MongoDB
+                result = db.tweets.insert_many(records, ordered=False)
+                rows_added += len(result.inserted_ids)
+                logger.info(f"Added {len(result.inserted_ids)} tweets for {username}")
             else:
                 logger.warning(f"No valid posts to concatenate for {username}")
         else:

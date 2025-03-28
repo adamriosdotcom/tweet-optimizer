@@ -1,111 +1,90 @@
-import sqlite3
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Initialize the MongoDB database with the proper schema and indexes.
+"""
+
 import logging
-from typing import List, Dict, Any, Optional
+from database import TwitterDatabase
+from datetime import datetime
 
-logger = logging.getLogger(__name__)
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("init_db.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("db_initializer")
 
-def init_database(db_path: str = 'tweets.db') -> None:
-    """Initialize the SQLite database with the proper schema."""
+def create_indexes(db):
+    """Create necessary indexes for the tweets collection."""
     try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        
-        # Drop existing table if it exists
-        cursor.execute("DROP TABLE IF EXISTS tweets")
-        
-        # Create tweets table with proper schema
-        cursor.execute("""
-        CREATE TABLE tweets (
-            uniqueid TEXT PRIMARY KEY,
-            tweet_date TEXT,
-            tweet_hour INTEGER,
-            day_of_week TEXT,
-            text TEXT,
-            author_username TEXT,
-            author_id TEXT,
-            created_at TIMESTAMP,
-            like_count INTEGER,
-            retweet_count INTEGER,
-            reply_count INTEGER,
-            quote_count INTEGER,
-            view_count INTEGER,
-            bookmark_count INTEGER,
-            lang TEXT,
-            raw_json TEXT,
-            
-            -- Feature columns
-            text_length INTEGER,
-            word_count INTEGER,
-            hashtag_count INTEGER,
-            mention_count INTEGER,
-            sentiment REAL,
-            engagement_score REAL,
-            likes_per_follower REAL,
-            rolling_engagement REAL,
-            follower_following_ratio REAL,
-            account_age_days INTEGER,
-            has_media INTEGER,
-            retweet_like_ratio REAL,
-            url_count INTEGER,
-            distinct_hashtags INTEGER,
-            unique_word_count INTEGER,
-            avg_word_length REAL,
-            punctuation_count INTEGER,
-            uppercase_ratio REAL,
-            emoji_count INTEGER,
-            flesch_reading_ease REAL,
-            subjectivity REAL,
-            quote_influence REAL,
-            response_time_minutes REAL,
-            bio_length INTEGER,
-            verified_engagement_avg REAL,
-            has_location INTEGER,
-            media_aspect_ratio REAL,
-            birdwatch_flagged INTEGER,
-            tweet_complexity INTEGER,
-            daily_author_activity REAL,
-            author_tweet_count TEXT,
-            tweets_last_7_days INTEGER,
-            tweets_last_30_days INTEGER,
-            avg_tweets_per_day_7d REAL,
-            avg_tweets_per_day_30d REAL,
-            interaction_reciprocity INTEGER,
-            followers_per_status REAL,
-            follower_growth_rate REAL,
-            popularity_index REAL,
-            bio_url_count INTEGER,
-            follower_growth_rate_7d REAL,
-            follower_growth_rate_30d REAL,
-            topics TEXT,
-            topics_list TEXT,
-            common_topic_count TEXT,
-            jaccard_similarity TEXT
-        )
-        """)
-        
-        # Create indexes for commonly queried columns
+        # Create indexes for commonly queried fields
         indexes = [
-            "CREATE INDEX IF NOT EXISTS idx_author_username ON tweets(author_username)",
-            "CREATE INDEX IF NOT EXISTS idx_created_at ON tweets(created_at)",
-            "CREATE INDEX IF NOT EXISTS idx_like_count ON tweets(like_count)",
-            "CREATE INDEX IF NOT EXISTS idx_topics ON tweets(topics)",
-            "CREATE INDEX IF NOT EXISTS idx_tweet_date ON tweets(tweet_date)",
-            "CREATE INDEX IF NOT EXISTS idx_engagement_score ON tweets(engagement_score)"
+            [("created_at", 1)],
+            [("author.userName", 1)],
+            [("engagement_score", -1)],
+            [("processed", 1)],
+            [("error", 1)],
+            [("topics", 1)],
+            [("uniqueid", 1), {"unique": True}]
         ]
         
-        for index_query in indexes:
-            cursor.execute(index_query)
-            
-        conn.commit()
-        logger.info("Database initialized successfully with proper schema")
+        for index in indexes:
+            db.tweets.create_index(index)
+            logger.info(f"Created index: {index}")
+        
+        logger.info("All indexes created successfully")
         
     except Exception as e:
-        logger.error(f"Failed to initialize database: {str(e)}")
+        logger.error(f"Error creating indexes: {str(e)}")
         raise
-    finally:
-        if conn:
-            conn.close()
+
+def validate_schema(db):
+    """Validate the database schema."""
+    try:
+        # Check if collection exists
+        if "tweets" not in db.list_collection_names():
+            logger.info("Creating tweets collection")
+            db.create_collection("tweets")
+        
+        # Get collection stats
+        stats = db.tweets.count_documents({})
+        logger.info(f"Current document count: {stats}")
+        
+        # Check indexes
+        indexes = list(db.tweets.list_indexes())
+        logger.info(f"Current indexes: {len(indexes)}")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error validating schema: {str(e)}")
+        return False
+
+def main():
+    """Main function to initialize the database."""
+    try:
+        logger.info("Initializing database...")
+        
+        # Initialize database connection
+        db = TwitterDatabase()
+        
+        # Validate schema
+        if not validate_schema(db):
+            raise Exception("Schema validation failed")
+        
+        # Create indexes
+        create_indexes(db)
+        
+        logger.info("Database initialization completed successfully")
+        
+    except Exception as e:
+        logger.error(f"Error initializing database: {str(e)}")
+        raise
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    init_database() 
+    main() 

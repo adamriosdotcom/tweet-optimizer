@@ -94,21 +94,21 @@ class FeedbackCollector:
             if not tweet_text:
                 continue
             
-            # Query database for similar tweets
-            query = """
-            SELECT 
-                uniqueid, text, like_count, retweet_count, reply_count,
-                quote_count, view_count, bookmark_count
-            FROM tweets
-            WHERE text LIKE ?
-            LIMIT 1
-            """
+            # Query database for similar tweets using MongoDB
+            query = {
+                "text": {"$regex": tweet_text[:50], "$options": "i"},
+                "like_count": {"$exists": True},
+                "retweet_count": {"$exists": True},
+                "reply_count": {"$exists": True},
+                "quote_count": {"$exists": True},
+                "bookmark_count": {"$exists": True}
+            }
             
-            tweet_data = pd.read_sql_query(query, self.db.conn, params=(f"%{tweet_text[:50]}%",))
+            tweet_data = list(self.db.tweets.find(query).limit(1))
             
-            if len(tweet_data) > 0:
+            if tweet_data:
                 # Calculate actual engagement from historical data
-                row = tweet_data.iloc[0]
+                row = tweet_data[0]
                 actual_engagement = (
                     row['like_count'] * 1.0 +
                     row['retweet_count'] * 2.0 +

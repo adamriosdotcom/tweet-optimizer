@@ -51,6 +51,93 @@ st.markdown("""
 # Initialize database
 db = TwitterDatabase()
 
+def system_status():
+    """Display system status and database information"""
+    st.header("System Status")
+    
+    try:
+        # Get database stats
+        stats = db.get_tweet_stats()
+        
+        # Display database statistics
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Tweets", f"{stats['total_tweets']:,}")
+        with col2:
+            st.metric("Average Engagement", f"{stats['avg_engagement']:.2f}")
+        with col3:
+            st.metric("Top Authors", f"{len(stats['top_authors'])}")
+        
+        # Display top authors
+        st.subheader("Top Authors by Engagement")
+        if stats['top_authors']:
+            authors_df = pd.DataFrame(stats['top_authors'])
+            authors_df.columns = ['Author', 'Tweet Count', 'Avg Engagement']
+            st.dataframe(authors_df, use_container_width=True)
+        
+        # Display top topics
+        st.subheader("Top Topics")
+        if stats['top_topics']:
+            topics_df = pd.DataFrame(stats['top_topics'])
+            topics_df.columns = ['Topic', 'Count', 'Avg Engagement']
+            st.dataframe(topics_df, use_container_width=True)
+        
+        # Display database health
+        st.subheader("Database Health")
+        health_col1, health_col2 = st.columns(2)
+        
+        with health_col1:
+            # Get unprocessed tweets count
+            unprocessed_count = db.tweets.count_documents({
+                "$or": [
+                    {"processed": None},
+                    {"processed": ""},
+                    {"text_length": None},
+                    {"sentiment": None},
+                    {"topics": None},
+                    {"topics": ""},
+                    {"topics": "[]"},
+                    {"topics": "null"}
+                ]
+            })
+            st.metric("Unprocessed Tweets", f"{unprocessed_count:,}")
+        
+        with health_col2:
+            # Get error tweets count
+            error_count = db.tweets.count_documents({"processed": "error"})
+            st.metric("Error Tweets", f"{error_count:,}")
+        
+        # Display processing status if available
+        try:
+            with open('processing_progress.json', 'r') as f:
+                progress_data = json.load(f)
+                st.subheader("Processing Status")
+                progress_col1, progress_col2, progress_col3 = st.columns(3)
+                
+                with progress_col1:
+                    st.metric(
+                        "Processed Tweets",
+                        f"{progress_data['total_processed']:,}"
+                    )
+                with progress_col2:
+                    st.metric(
+                        "Processing Speed",
+                        f"{progress_data['tweets_per_second']:.2f} tweets/s"
+                    )
+                with progress_col3:
+                    st.metric(
+                        "Time Remaining",
+                        f"{progress_data['estimated_time_remaining']:.1f}s"
+                    )
+                
+                st.progress(progress_data['progress_percentage'] / 100)
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+        
+    except Exception as e:
+        st.error(f"Error getting database stats: {str(e)}")
+        st.exception(e)
+
 # Title and description with better formatting
 st.title("Tweet Optimization Dashboard")
 st.markdown("""
@@ -73,23 +160,7 @@ with st.sidebar:
     
     st.markdown("---")
     st.markdown("### System Status")
-    try:
-        cursor = db.conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM tweets")
-        total_tweets = cursor.fetchone()[0]
-        cursor.execute("""
-            SELECT COUNT(*) FROM tweets 
-            WHERE text_length IS NULL 
-            OR sentiment IS NULL 
-            OR topics IS NULL 
-            OR topics = ''
-        """)
-        unprocessed_tweets = cursor.fetchone()[0]
-        
-        st.metric("Total Tweets", f"{total_tweets:,}")
-        st.metric("Unprocessed Tweets", f"{unprocessed_tweets:,}")
-    except Exception as e:
-        st.error(f"Error getting database stats: {str(e)}")
+    system_status()
 
 # API endpoint
 API_URL = "http://localhost:8000"
@@ -98,17 +169,32 @@ def get_trending_topics():
     """Get trending topics from recent tweets"""
     try:
         # Get tweets from last 24 hours
-        query = """
-        SELECT topics, COUNT(*) as count, AVG(engagement_score) as avg_engagement
-        FROM tweets
-        WHERE tweet_date >= datetime('now', '-1 day')
-        AND topics IS NOT NULL AND topics != ''
-        GROUP BY topics
-        ORDER BY avg_engagement DESC
-        LIMIT 20
-        """
-        df = pd.read_sql_query(query, db.conn)
-        return df
+        pipeline = [
+            {
+                "$match": {
+                    "created_at": {
+                        "$gte": datetime.datetime.now() - datetime.timedelta(days=1)
+                    },
+                    "topics": {"$ne": None, "$ne": ""}
+                }
+            },
+            {
+                "$group": {
+                    "_id": "$topics",
+                    "count": {"$sum": 1},
+                    "avg_engagement": {"$avg": "$engagement_score"}
+                }
+            },
+            {"$sort": {"avg_engagement": -1}},
+            {"$limit": 20}
+        ]
+        
+        results = list(db.tweets.aggregate(pipeline))
+        if results:
+            df = pd.DataFrame(results)
+            df.columns = ['topics', 'count', 'avg_engagement']
+            return df
+        return pd.DataFrame()
     except Exception as e:
         st.error(f"Error getting trending topics: {str(e)}")
         return pd.DataFrame()
@@ -116,14 +202,31 @@ def get_trending_topics():
 def get_top_tweets():
     """Get top performing tweets"""
     try:
-        query = """
-        SELECT text, author_username, engagement_score, tweet_date, topics
-        FROM tweets
-        WHERE tweet_date >= datetime('now', '-7 days')
-        ORDER BY engagement_score DESC
-        LIMIT 10
-        """
-        return pd.read_sql_query(query, db.conn)
+        pipeline = [
+            {
+                "$match": {
+                    "created_at": {
+                        "$gte": datetime.datetime.now() - datetime.timedelta(days=7)
+                    }
+                }
+            },
+            {
+                "$project": {
+                    "text": 1,
+                    "author_username": 1,
+                    "engagement_score": 1,
+                    "created_at": 1,
+                    "topics": 1
+                }
+            },
+            {"$sort": {"engagement_score": -1}},
+            {"$limit": 10}
+        ]
+        
+        results = list(db.tweets.aggregate(pipeline))
+        if results:
+            return pd.DataFrame(results)
+        return pd.DataFrame()
     except Exception as e:
         st.error(f"Error getting top tweets: {str(e)}")
         return pd.DataFrame()
@@ -172,8 +275,10 @@ def admin_page():
         # Process button with status
         if st.button("Start Processing", type="primary"):
             try:
-                # Create a placeholder for logs
+                # Create placeholders for progress and logs
+                progress_placeholder = st.empty()
                 log_placeholder = st.empty()
+                metrics_placeholder = st.empty()
                 
                 # Save config
                 config = {
@@ -202,6 +307,9 @@ def admin_page():
                     universal_newlines=True
                 )
                 
+                # Create progress bar
+                progress_bar = progress_placeholder.progress(0)
+                
                 # Read and display output in real-time
                 while True:
                     output = process.stdout.readline()
@@ -209,6 +317,58 @@ def admin_page():
                         break
                     if output:
                         log_placeholder.text(output.strip())
+                        
+                        # Try to read progress data
+                        try:
+                            with open('processing_progress.json', 'r') as f:
+                                progress_data = json.load(f)
+                                
+                                # Update progress bar
+                                progress_bar.progress(progress_data['progress_percentage'] / 100)
+                                
+                                # Show metrics in columns
+                                col1, col2, col3 = st.columns(3)
+                                with col1:
+                                    st.metric(
+                                        "Processed Tweets",
+                                        f"{progress_data['total_processed']:,}"
+                                    )
+                                with col2:
+                                    st.metric(
+                                        "Processing Speed",
+                                        f"{progress_data['tweets_per_second']:.2f} tweets/s"
+                                    )
+                                with col3:
+                                    st.metric(
+                                        "Time Remaining",
+                                        f"{progress_data['estimated_time_remaining']:.1f}s"
+                                    )
+                                
+                                # Show detailed metrics
+                                metrics_col1, metrics_col2, metrics_col3 = st.columns(3)
+                                with metrics_col1:
+                                    st.metric(
+                                        "Skipped Tweets",
+                                        f"{progress_data['total_skipped']:,}"
+                                    )
+                                with metrics_col2:
+                                    st.metric(
+                                        "Error Tweets",
+                                        f"{progress_data['total_errors']:,}"
+                                    )
+                                with metrics_col3:
+                                    st.metric(
+                                        "Total Handled",
+                                        f"{progress_data['total_processed'] + progress_data['total_skipped'] + progress_data['total_errors']:,}"
+                                    )
+                                
+                                # Show status
+                                if progress_data.get('status') == 'completed':
+                                    st.success("Processing completed successfully!")
+                                    break
+                                
+                        except (FileNotFoundError, json.JSONDecodeError):
+                            pass
                 
                 # Get final output
                 stdout, stderr = process.communicate()
@@ -224,6 +384,59 @@ def admin_page():
             except Exception as e:
                 st.error(f"Error during processing: {str(e)}")
                 st.exception(e)
+        
+        # Show current processing status if available
+        try:
+            with open('processing_progress.json', 'r') as f:
+                progress_data = json.load(f)
+                st.subheader("Current Processing Status")
+                
+                # Show progress bar
+                st.progress(progress_data['progress_percentage'] / 100)
+                
+                # Show metrics in columns
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric(
+                        "Processed Tweets",
+                        f"{progress_data['total_processed']:,}"
+                    )
+                with col2:
+                    st.metric(
+                        "Processing Speed",
+                        f"{progress_data['tweets_per_second']:.2f} tweets/s"
+                    )
+                with col3:
+                    st.metric(
+                        "Time Remaining",
+                        f"{progress_data['estimated_time_remaining']:.1f}s"
+                    )
+                
+                # Show detailed metrics
+                metrics_col1, metrics_col2, metrics_col3 = st.columns(3)
+                with metrics_col1:
+                    st.metric(
+                        "Skipped Tweets",
+                        f"{progress_data['total_skipped']:,}"
+                    )
+                with metrics_col2:
+                    st.metric(
+                        "Error Tweets",
+                        f"{progress_data['total_errors']:,}"
+                    )
+                with metrics_col3:
+                    st.metric(
+                        "Total Handled",
+                        f"{progress_data['total_processed'] + progress_data['total_skipped'] + progress_data['total_errors']:,}"
+                    )
+                
+                # Show status
+                if progress_data.get('status') == 'completed':
+                    st.success("Processing completed successfully!")
+                elif progress_data.get('status') == 'processing':
+                    st.info("Processing in progress...")
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
     
     with tab2:
         st.header("Tweet Collection Configuration")
@@ -296,10 +509,11 @@ def admin_page():
             if st.button("Optimize Database", type="secondary"):
                 try:
                     st.info("Starting database optimization...")
-                    cursor = db.conn.cursor()
-                    cursor.execute("VACUUM")
-                    cursor.execute("ANALYZE")
-                    db.conn.commit()
+                    # Create indexes for better performance
+                    db.tweets.create_index("uniqueid", unique=True)
+                    db.tweets.create_index("processed")
+                    db.tweets.create_index("created_at")
+                    db.tweets.create_index("engagement_score")
                     st.success("Database optimization completed!")
                 except Exception as e:
                     st.error(f"Error optimizing database: {str(e)}")
@@ -307,13 +521,17 @@ def admin_page():
         # Database information
         st.subheader("Database Information")
         try:
-            cursor = db.conn.cursor()
-            cursor.execute("PRAGMA table_info(tweets)")
-            columns = cursor.fetchall()
+            # Get collection stats
+            stats = db.tweets.stats()
             
             # Create a DataFrame for better display
-            columns_df = pd.DataFrame(columns, columns=['cid', 'name', 'type', 'notnull', 'dflt_value', 'pk'])
-            st.dataframe(columns_df, use_container_width=True)
+            stats_df = pd.DataFrame([
+                {"Metric": "Total Documents", "Value": stats.get("count", 0)},
+                {"Metric": "Storage Size", "Value": f"{stats.get('storageSize', 0) / 1024 / 1024:.2f} MB"},
+                {"Metric": "Index Size", "Value": f"{stats.get('indexSize', 0) / 1024 / 1024:.2f} MB"},
+                {"Metric": "Average Document Size", "Value": f"{stats.get('avgObjSize', 0) / 1024:.2f} KB"}
+            ])
+            st.dataframe(stats_df, use_container_width=True)
             
         except Exception as e:
             st.error(f"Error getting database info: {str(e)}")
@@ -322,25 +540,22 @@ def admin_page():
         st.subheader("Database Statistics")
         try:
             # Get total tweets
-            cursor = db.conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM tweets")
-            total_tweets = cursor.fetchone()[0]
+            total_tweets = db.tweets.count_documents({})
             
             # Get average engagement
-            cursor.execute("SELECT AVG(engagement_score) FROM tweets WHERE engagement_score IS NOT NULL")
-            avg_engagement = cursor.fetchone()[0] or 0
+            pipeline = [
+                {"$group": {"_id": None, "avg": {"$avg": "$engagement_score"}}}
+            ]
+            result = list(db.tweets.aggregate(pipeline))
+            avg_engagement = result[0]['avg'] if result else 0
             
-            # Get unique topics count (improved query)
-            cursor.execute("""
-                SELECT COUNT(DISTINCT topic) as unique_topics
-                FROM (
-                    SELECT trim(value) as topic
-                    FROM tweets
-                    CROSS JOIN json_each('["' || replace(topics, ',', '","') || '"]')
-                    WHERE topics IS NOT NULL AND topics != ''
-                )
-            """)
-            unique_topics = cursor.fetchone()[0] or 0
+            # Get unique topics count
+            pipeline = [
+                {"$group": {"_id": "$topics"}},
+                {"$count": "unique_topics"}
+            ]
+            result = list(db.tweets.aggregate(pipeline))
+            unique_topics = result[0]['unique_topics'] if result else 0
             
             # Display metrics
             col1, col2, col3 = st.columns(3)
@@ -353,22 +568,19 @@ def admin_page():
             
             # Add topic distribution visualization
             st.subheader("Topic Distribution")
-            cursor.execute("""
-                SELECT topic, COUNT(*) as count
-                FROM (
-                    SELECT trim(value) as topic
-                    FROM tweets
-                    CROSS JOIN json_each('["' || replace(topics, ',', '","') || '"]')
-                    WHERE topics IS NOT NULL AND topics != ''
-                )
-                GROUP BY topic
-                ORDER BY count DESC
-                LIMIT 20
-            """)
-            topic_data = cursor.fetchall()
+            pipeline = [
+                {"$group": {
+                    "_id": "$topics",
+                    "count": {"$sum": 1}
+                }},
+                {"$sort": {"count": -1}},
+                {"$limit": 20}
+            ]
+            topic_data = list(db.tweets.aggregate(pipeline))
             
             if topic_data:
-                topics_df = pd.DataFrame(topic_data, columns=['Topic', 'Count'])
+                topics_df = pd.DataFrame(topic_data)
+                topics_df.columns = ['Topic', 'Count']
                 fig = px.bar(
                     topics_df,
                     x='Topic',

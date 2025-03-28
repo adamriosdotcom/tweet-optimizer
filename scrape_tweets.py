@@ -9,26 +9,11 @@ Created on Sun Jan 12 08:56:25 2025
 from apify_client import ApifyClient
 import pandas as pd
 import numpy as np
-import sqlite3
 import datetime
 import logging
 from database import TwitterDatabase
-
-
-# Your Apify API token
-API_TOKEN = "apify_api_cWNCykbnZaZflrJJBacmT1IjvC9vqb0EOFjt"
-
-
-
-maxUsernames = 500
-windowLength = "30d"
-maxTweets = 500
-
-
-
-# Initialize the Apify client
-client = ApifyClient(API_TOKEN)
-
+from dotenv import load_dotenv
+import os
 
 # Set up logging
 logging.basicConfig(
@@ -41,187 +26,150 @@ logging.basicConfig(
 )
 logger = logging.getLogger("tweet_scraper")
 
+# Load environment variables
+load_dotenv()
 
-get_users = {
-  "getFollowers": False,
-  "getFollowing": True,
-  "maxItems": maxUsernames,
-  "twitterHandles": [
-    "darroverse"
-  ]
-}
+# Your Apify API token
+APIFY_TOKEN = os.getenv('APIFY_API_KEY')
 
-following_actor_id = "apidojo/twitter-user-scraper"
-following_run = client.actor(following_actor_id).call(run_input=get_users)
+# Initialize the Apify client
+client = ApifyClient(APIFY_TOKEN)
 
-# Get the dataset ID for the results
-following_dataset_id = following_run["defaultDatasetId"]
-
-# Fetch the results from the dataset
-following_results = client.dataset(following_dataset_id).list_items().items
-
-usernames = [username['userName'] for username in following_results]
-
-rows_added = 0
-
-for username in usernames:
-    
-    logger.info(f"Scraping tweets from {username}...")
-    
-    input_data = {
-      "filter:blue_verified": False,
-      "filter:consumer_video": False,
-      "filter:has_engagement": False,
-      "filter:hashtags": False,
-      "filter:images": False,
-      "filter:links": False,
-      "filter:media": False,
-      "filter:mentions": False,
-      "filter:native_video": False,
-      "filter:nativeretweets": False,
-      "filter:news": False,
-      "filter:pro_video": False,
-      "filter:quote": False,
-      "filter:replies": False,
-      "filter:safe": False,
-      "filter:spaces": False,
-      "filter:twimg": False,
-      "filter:verified": False,
-      "filter:videos": False,
-      "filter:vine": False,
-      "from": username,
-      "include:nativeretweets": False,
-      "lang": "en",
-      "queryType": "Latest",
-      "within_time": windowLength,
-      "maxItems": maxTweets,
-      "min_retweets": 0,
-      "min_faves": 0,
-      "min_replies": 0,
-      "-min_retweets": 0,
-      "-min_faves": 0,
-      "-min_replies": 0
-    }
-    
-    # Run the Instagram Scraper actor
-    posts_actor_id = "kaitoeasyapi/twitter-x-data-tweet-scraper-pay-per-result-cheapest"
-    posts_run = client.actor(posts_actor_id).call(run_input=input_data)
-    
-    # Get the dataset ID for the results
-    posts_dataset_id = posts_run["defaultDatasetId"]
-    
-    # Fetch the results from the dataset
-    posts_results = client.dataset(posts_dataset_id).list_items().items
-    
-    valid_posts = [post for post in posts_results if post['type'] == 'tweet']
-        
-#    tweets = pd.concat([pd.json_normalize(inner_list) for inner_list in valid_posts],ignore_index=True)
-    
-    dfs = [pd.json_normalize(inner_list) for inner_list in valid_posts if inner_list]
-    if dfs:
-        tweets = pd.concat(dfs, ignore_index=True)
-    else:
-        print("No valid posts to concatenate")
-    
-    tweets['datetime'] = pd.to_datetime(str(np.datetime64(posts_run['finishedAt'].replace(tzinfo=None)))).strftime("%Y%m%d%H%M%S")
-    tweets['uniqueid'] = tweets['id'] + "_" + tweets['datetime']
-    
-    list_columns = [col for col in tweets.columns if tweets[col].apply(lambda x: isinstance(x, list)).any()]
-    
-    for col in list_columns:
-        tweets[col] = tweets[col].apply(lambda x: ','.join(map(str, x)) if isinstance(x, list) else x)
-    
-
-
-
-    
-    # CREATE DATABASE IF IT DOESNT ALREADY EXIST
-    
-    columns = tweets.columns
-    
-    col_defs = ['uniqueid TEXT PRIMARY KEY']
-    for col in columns:
-        if col == "uniqueid":
-            continue
-        col_defs.append(f'"{col}" TEXT')
-    
-    create_table_query = "CREATE TABLE IF NOT EXISTS tweets (\n" + ",\n".join(col_defs) + "\n);"
-    
-    conn = sqlite3.connect('tweets.db')
-    cursor = conn.cursor()
-    cursor.execute(create_table_query)
-    conn.commit()
-    conn.close()
-    
-
-
-    
-    
-    # ADD COLUMN IF DOESNT ALREADY EXIST
-    
-    
-    # assume tweets is your dataframe
-    conn = sqlite3.connect('tweets.db')
-    cursor = conn.cursor()
-    
-    # get existing columns in the 'tweets' table
-    cursor.execute("PRAGMA table_info(tweets);")
-    existing_columns = [info[1] for info in cursor.fetchall()]
-    
-    # for each column in your dataframe that's not already in the table, add it
-    for col in tweets.columns:
-        if col not in existing_columns:
-            # here we assume new columns are TEXT; adjust type as needed
-            alter_query = f'ALTER TABLE tweets ADD COLUMN "{col}" TEXT;'
-            print(f"Adding column: {col}")
-            cursor.execute(alter_query)
-            conn.commit()  # commit after each column addition
-    
-    # now you can safely append your dataframe
-    tweets.to_sql('tweets', conn, if_exists='append', index=False)
-    
-    rows_added += len(tweets)
-    
-    conn.close()
-    
-current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-log_entry = f"{current_time}: {rows_added} rows added.\n"
-    
-with open("scrape_log.txt", "a") as log_file:
-    log_file.write(log_entry)
-    
-
-def process_tweets(posts_run):
-    """Process tweets from the API response and store them in the database"""
+def scrape_user_tweets(username, max_tweets=100):
+    """Scrape tweets from a specific user."""
     try:
-        # Extract tweets from the run
-        tweets = pd.DataFrame(posts_run['items'])
+        input_data = {
+            "filter:blue_verified": False,
+            "filter:consumer_video": False,
+            "filter:has_engagement": False,
+            "filter:hashtags": False,
+            "filter:images": False,
+            "filter:links": False,
+            "filter:media": False,
+            "filter:mentions": False,
+            "filter:native_video": False,
+            "filter:nativeretweets": False,
+            "filter:news": False,
+            "filter:pro_video": False,
+            "filter:quote": False,
+            "filter:replies": False,
+            "filter:safe": False,
+            "filter:spaces": False,
+            "filter:twimg": False,
+            "filter:verified": False,
+            "filter:videos": False,
+            "filter:vine": False,
+            "from": username,
+            "include:nativeretweets": False,
+            "lang": "en",
+            "queryType": "Latest",
+            "maxItems": max_tweets
+        }
         
-        # Add datetime and uniqueid
-        tweets['datetime'] = pd.to_datetime(str(np.datetime64(posts_run['finishedAt'].replace(tzinfo=None)))).strftime("%Y%m%d%H%M%S")
-        tweets['uniqueid'] = tweets['id'] + "_" + tweets['datetime']
+        # Run the Twitter Scraper actor
+        posts_actor_id = "kaitoeasyapi/twitter-x-data-tweet-scraper-pay-per-result-cheapest"
+        posts_run = client.actor(posts_actor_id).call(run_input=input_data)
         
-        # Process list columns
-        list_columns = [col for col in tweets.columns if tweets[col].apply(lambda x: isinstance(x, list)).any()]
-        for col in list_columns:
-            tweets[col] = tweets[col].apply(lambda x: ','.join(map(str, x)) if isinstance(x, list) else x)
+        # Get dataset ID and fetch items
+        posts_dataset_id = posts_run["defaultDatasetId"]
+        posts_results = client.dataset(posts_dataset_id).list_items().items
         
-        # Initialize database connection
+        valid_posts = [post for post in posts_results if post['type'] == 'tweet']
+        
+        if valid_posts:
+            dfs = [pd.json_normalize(inner_list) for inner_list in valid_posts if inner_list]
+            if dfs:
+                tweets = pd.concat(dfs, ignore_index=True)
+                
+                # Add datetime and uniqueid
+                tweets['datetime'] = pd.to_datetime(str(np.datetime64(posts_run['finishedAt'].replace(tzinfo=None)))).strftime("%Y%m%d%H%M%S")
+                tweets['uniqueid'] = tweets['id'] + "_" + tweets['datetime']
+                
+                # Process list columns
+                list_columns = [col for col in tweets.columns if tweets[col].apply(lambda x: isinstance(x, list)).any()]
+                for col in list_columns:
+                    tweets[col] = tweets[col].apply(lambda x: ','.join(map(str, x)) if isinstance(x, list) else x)
+                
+                return tweets
+            else:
+                logger.warning(f"No valid posts to concatenate for {username}")
+                return None
+        else:
+            logger.warning(f"No valid tweets found for {username}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error scraping tweets for {username}: {str(e)}")
+        return None
+
+def save_to_mongodb(tweets_df):
+    """Save tweets to MongoDB."""
+    try:
         db = TwitterDatabase()
         
-        # Insert tweets
-        rows_added = db.insert_tweets(tweets)
-        logger.info(f"Added {rows_added} new tweets to the database")
+        # Convert DataFrame to list of dictionaries
+        records = tweets_df.to_dict('records')
         
-        return rows_added
+        # Insert into MongoDB
+        result = db.tweets.insert_many(records, ordered=False)
+        logger.info(f"Added {len(result.inserted_ids)} tweets to MongoDB")
+        return len(result.inserted_ids)
         
     except Exception as e:
-        logger.error(f"Failed to process tweets: {str(e)}")
+        logger.error(f"Error saving to MongoDB: {str(e)}")
+        raise
+
+def scrape_following_list(username, max_users=50):
+    """Scrape tweets from users in a following list."""
+    try:
+        get_users = {
+            "getFollowers": False,
+            "getFollowing": True,
+            "maxItems": max_users,
+            "twitterHandles": [username]
+        }
+        
+        following_actor_id = "apidojo/twitter-user-scraper"
+        following_run = client.actor(following_actor_id).call(run_input=get_users)
+        
+        # Get the dataset ID for the results
+        following_dataset_id = following_run["defaultDatasetId"]
+        
+        # Fetch the results from the dataset
+        following_results = client.dataset(following_dataset_id).list_items().items
+        
+        usernames = [username['userName'] for username in following_results]
+        total_tweets = 0
+        
+        for username in usernames:
+            logger.info(f"Scraping tweets from {username}...")
+            tweets_df = scrape_user_tweets(username)
+            
+            if tweets_df is not None:
+                tweets_added = save_to_mongodb(tweets_df)
+                total_tweets += tweets_added
+        
+        return total_tweets
+        
+    except Exception as e:
+        logger.error(f"Error scraping following list: {str(e)}")
+        raise
+
+def main():
+    """Main function to run the scraping process."""
+    try:
+        # Example usage
+        target_username = "darroverse"  # Replace with your target username
+        total_tweets = scrape_following_list(target_username)
+        
+        logger.info(f"Scraping completed. Total tweets collected: {total_tweets}")
+        
+    except Exception as e:
+        logger.error(f"Error in main scraping process: {str(e)}")
         raise
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    # Add test code here if needed
+    main()
 
 
 

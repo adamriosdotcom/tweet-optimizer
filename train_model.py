@@ -1,189 +1,144 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Train XGBoost model for tweet engagement prediction.
+Model training script for tweet analysis.
 """
 
 import pandas as pd
 import numpy as np
-import sqlite3
+from database import TwitterDatabase
 import logging
-import pickle
+from datetime import datetime, timedelta
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
-import xgboost as xgb
-from sklearn.metrics import mean_squared_error, r2_score
-from scipy import stats
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import classification_report, confusion_matrix
+import joblib
+import json
 
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("model_training.log"),
+        logging.FileHandler("training.log"),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger("model_trainer")
 
-def get_available_columns():
-    """Get list of available columns in the tweets table."""
-    conn = sqlite3.connect('tweets.db')
-    query = "SELECT name FROM pragma_table_info('tweets')"
-    columns = pd.read_sql_query(query, conn)['name'].tolist()
-    conn.close()
-    return columns
-
-def remove_outliers(df, columns, z_threshold=3):
-    """Remove outliers using z-score method."""
-    df_clean = df.copy()
-    for col in columns:
-        z_scores = stats.zscore(df_clean[col])
-        df_clean = df_clean[abs(z_scores) < z_threshold]
-    return df_clean
-
-def load_processed_tweets():
-    """Load processed tweets from the database."""
-    conn = sqlite3.connect('tweets.db')
-    
-    # Get available columns
-    available_columns = get_available_columns()
-    logger.info(f"Available columns: {available_columns}")
-    
-    # Define feature columns based on what's available
-    feature_columns = [
-        col for col in [
-            # Text features
-            'text_length', 'word_count', 'avg_word_length',
-            'hashtag_count', 'mention_count', 'url_count', 'emoji_count',
-            'sentiment', 'flesch_reading_ease', 'subjectivity',
-            'tweet_complexity', 'punctuation_count', 'uppercase_ratio',
-            
-            # Author features
-            'daily_author_activity', 'author_tweet_count',
-            'tweets_last_7_days', 'tweets_last_30_days',
-            'avg_tweets_per_day_7d', 'avg_tweets_per_day_30d',
-            'followers_per_status', 'follower_growth_rate',
-            'popularity_index', 'account_age_days',
-            
-            # Engagement features
-            'likes_per_follower', 'rolling_engagement',
-            'retweet_like_ratio', 'quote_influence',
-            'response_time_minutes', 'verified_engagement_avg',
-            
-            # Content features
-            'has_media', 'has_location', 'media_aspect_ratio',
-            'bio_length', 'bio_url_count',
-            
-            # Language and topics
-            'language', 'topic'
-        ] if col in available_columns
-    ]
-    
-    logger.info(f"Using feature columns: {feature_columns}")
-    
-    # Load data
-    query = f"""
-    SELECT {', '.join(feature_columns)}, 
-           (likeCount + retweetCount + replyCount + quoteCount) as engagement_score
-    FROM tweets
-    WHERE text_length IS NOT NULL AND sentiment IS NOT NULL
-    """
-    
-    df = pd.read_sql_query(query, conn)
-    conn.close()
-    
-    # Remove outliers from engagement score
-    df = remove_outliers(df, ['engagement_score'])
-    
-    return df, feature_columns
-
-def prepare_features(df, feature_columns):
-    """Prepare features for model training."""
-    # Separate numerical and categorical features
-    numerical_features = [
-        col for col in feature_columns
-        if col not in ['language', 'topic']
-    ]
-    
-    categorical_features = [
-        col for col in ['language', 'topic']
-        if col in feature_columns
-    ]
-    
-    logger.info(f"Numerical features: {numerical_features}")
-    logger.info(f"Categorical features: {categorical_features}")
-    
-    # Create preprocessing steps
-    preprocessor = ColumnTransformer(
-        transformers=[
-            ('num', StandardScaler(), numerical_features),
-            ('cat', OneHotEncoder(drop='first', sparse_output=False), categorical_features)
-        ])
-    
-    # Prepare target variable
-    y = df['engagement_score']
-    
-    # Create feature matrix
-    X = df[numerical_features + categorical_features]
-    
-    return X, y, preprocessor
-
-def train_model():
-    """Train the XGBoost model."""
+def load_data():
+    """Load data from MongoDB."""
     try:
-        logger.info("Loading processed tweets...")
-        df, feature_columns = load_processed_tweets()
-        
-        logger.info("Preparing features...")
-        X, y, preprocessor = prepare_features(df, feature_columns)
-        
-        # Split the data
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.2, random_state=42
+        db = TwitterDatabase()
+        # Convert MongoDB documents to DataFrame
+        cursor = db.tweets.find({})
+        df = pd.DataFrame(list(cursor))
+        logger.info(f"Loaded {len(df)} tweets from MongoDB")
+        return df
+    except Exception as e:
+        logger.error(f"Error loading data: {str(e)}")
+        raise
+
+def prepare_features(df):
+    """Prepare features for model training."""
+    # Calculate engagement score if not exists
+    if 'engagement_score' not in df.columns:
+        df['engagement_score'] = (
+            df['retweet_count'].fillna(0) +
+            df['favorite_count'].fillna(0) * 2 +
+            df['reply_count'].fillna(0) * 3
         )
+    
+    # Create binary target variable (high engagement vs low engagement)
+    df['is_high_engagement'] = (df['engagement_score'] > df['engagement_score'].median()).astype(int)
+    
+    # Prepare text features
+    df['processed_text'] = df['text'].fillna('')
+    
+    return df
+
+def train_model(df):
+    """Train the model."""
+    # Split features and target
+    X = df['processed_text']
+    y = df['is_high_engagement']
+    
+    # Split data into training and testing sets
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
+    
+    # Create and fit TF-IDF vectorizer
+    vectorizer = TfidfVectorizer(
+        max_features=1000,
+        stop_words='english',
+        ngram_range=(1, 2)
+    )
+    X_train_tfidf = vectorizer.fit_transform(X_train)
+    X_test_tfidf = vectorizer.transform(X_test)
+    
+    # Train Random Forest model
+    model = RandomForestClassifier(
+        n_estimators=100,
+        max_depth=10,
+        random_state=42
+    )
+    model.fit(X_train_tfidf, y_train)
+    
+    # Evaluate model
+    y_pred = model.predict(X_test_tfidf)
+    report = classification_report(y_test, y_pred)
+    confusion = confusion_matrix(y_test, y_pred)
+    
+    # Save model and vectorizer
+    joblib.dump(model, 'tweet_model.joblib')
+    joblib.dump(vectorizer, 'tweet_vectorizer.joblib')
+    
+    return {
+        'classification_report': report,
+        'confusion_matrix': confusion.tolist(),
+        'feature_importance': dict(zip(
+            vectorizer.get_feature_names_out(),
+            model.feature_importances_
+        ))
+    }
+
+def save_results(results):
+    """Save training results to JSON file."""
+    try:
+        with open('model_results.json', 'w') as f:
+            json.dump(results, f, indent=4)
+        logger.info("Saved model results to model_results.json")
+    except Exception as e:
+        logger.error(f"Error saving model results: {str(e)}")
+        raise
+
+def main():
+    """Main function to run model training pipeline."""
+    try:
+        # Load data
+        df = load_data()
         
-        # Create pipeline with more complex model
-        model = Pipeline([
-            ('preprocessor', preprocessor),
-            ('regressor', xgb.XGBRegressor(
-                objective='reg:squarederror',
-                n_estimators=200,
-                learning_rate=0.05,
-                max_depth=8,
-                min_child_weight=3,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                random_state=42
-            ))
-        ])
+        # Prepare features
+        df = prepare_features(df)
         
-        logger.info("Training model...")
-        model.fit(X_train, y_train)
+        # Train model
+        results = train_model(df)
         
-        # Make predictions
-        y_pred = model.predict(X_test)
+        # Save results
+        save_results(results)
         
-        # Calculate metrics
-        mse = mean_squared_error(y_test, y_pred)
-        r2 = r2_score(y_test, y_pred)
-        
-        logger.info(f"Model Performance:")
-        logger.info(f"MSE: {mse:.2f}")
-        logger.info(f"R² Score: {r2:.2f}")
-        
-        # Save the model and preprocessor
-        logger.info("Saving model and preprocessor...")
-        with open('model.pkl', 'wb') as f:
-            pickle.dump(model, f)
-        
-        logger.info("Model training completed successfully!")
+        # Log summary
+        logger.info("Training Summary:")
+        logger.info(f"Total samples: {len(df)}")
+        logger.info(f"High engagement samples: {df['is_high_engagement'].sum()}")
+        logger.info("\nClassification Report:")
+        logger.info(results['classification_report'])
         
     except Exception as e:
-        logger.error(f"Error during model training: {str(e)}")
+        logger.error(f"Error in main training pipeline: {str(e)}")
         raise
 
 if __name__ == "__main__":
-    train_model() 
+    main() 
