@@ -91,15 +91,43 @@ class TwitterDatabase:
             ]
             stats['top_authors'] = list(self.tweets.aggregate(pipeline))
             
-            # Top topics
+            # Top topics - Updated to handle comma-separated topics
             pipeline = [
+                # Unwind the topics array (split comma-separated string into array)
+                {"$addFields": {
+                    "topics_array": {
+                        "$split": [
+                            {"$ifNull": ["$topics", ""]},
+                            ","
+                        ]
+                    }
+                }},
+                # Unwind the array to get individual topics
+                {"$unwind": "$topics_array"},
+                # Clean up topics (trim whitespace and filter empty)
+                {"$addFields": {
+                    "clean_topic": {
+                        "$trim": {
+                            "input": "$topics_array",
+                            "chars": " "
+                        }
+                    }
+                }},
+                {"$match": {
+                    "clean_topic": {"$ne": ""}
+                }},
+                # Group by topic and calculate metrics
                 {"$group": {
-                    "_id": "$topics",
+                    "_id": "$clean_topic",
                     "count": {"$sum": 1},
                     "avg_engagement": {"$avg": "$engagement_score"}
                 }},
-                {"$sort": {"avg_engagement": -1}},
-                {"$limit": 10}
+                # Sort by count and engagement
+                {"$sort": {
+                    "count": -1,
+                    "avg_engagement": -1
+                }},
+                {"$limit": 20}
             ]
             stats['top_topics'] = list(self.tweets.aggregate(pipeline))
             
