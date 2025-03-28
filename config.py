@@ -75,11 +75,28 @@ class Settings(BaseSettings):
     # API settings
     APIFY_API_KEY: str = APIFY_API_KEY
     OPENAI_API_KEY: str = OPENAI_API_KEY
+    API_KEY: str = os.getenv('API_KEY', 'your_api_key_here')
+    API_HOST: str = os.getenv('API_HOST', '0.0.0.0')
+    API_PORT: int = int(os.getenv('API_PORT', '8000'))
+    
+    # Database settings
+    DB_HOST: str = os.getenv('DB_HOST', 'localhost')
+    DB_PORT: int = int(os.getenv('DB_PORT', '5432'))
+    DB_NAME: str = os.getenv('DB_NAME', 'twitter_data')
+    DB_USER: str = os.getenv('DB_USER', 'adamrios')
+    DB_PASSWORD: str = os.getenv('DB_PASSWORD', 'your_password_here')
+    
+    # Redis settings
+    REDIS_HOST: str = os.getenv('REDIS_HOST', 'localhost')
+    REDIS_PORT: int = int(os.getenv('REDIS_PORT', '6379'))
+    REDIS_DB: int = int(os.getenv('REDIS_DB', '0'))
     
     # Processing settings
     BATCH_SIZE: int = DEFAULT_BATCH_SIZE
     MAX_TWEETS: int = DEFAULT_MAX_TWEETS
     PROCESSING_INTERVAL: int = DEFAULT_PROCESSING_INTERVAL
+    MAX_RETRIES: int = int(os.getenv('MAX_RETRIES', '3'))
+    RETRY_DELAY: int = int(os.getenv('RETRY_DELAY', '2'))
     
     # Model settings
     MODEL_PATH: str = MODEL_PATH
@@ -102,9 +119,28 @@ class Settings(BaseSettings):
     DASHBOARD_TITLE: str = DASHBOARD_TITLE
     DASHBOARD_THEME: str = DASHBOARD_THEME
     
+    # Twitter API settings
+    TWITTER_API_KEY: str = os.getenv('TWITTER_API_KEY', 'your_twitter_api_key_here')
+    TWITTER_API_SECRET: str = os.getenv('TWITTER_API_SECRET', 'your_twitter_api_secret_here')
+    TWITTER_ACCESS_TOKEN: str = os.getenv('TWITTER_ACCESS_TOKEN', 'your_twitter_access_token_here')
+    TWITTER_ACCESS_SECRET: str = os.getenv('TWITTER_ACCESS_SECRET', 'your_twitter_access_secret_here')
+    
+    # Optimization settings
+    MAX_ITERATIONS: int = int(os.getenv('MAX_ITERATIONS', '5'))
+    MAX_VARIATIONS: int = int(os.getenv('MAX_VARIATIONS', '10'))
+    MIN_CONFIDENCE: float = float(os.getenv('MIN_CONFIDENCE', '0.5'))
+    MAX_CONFIDENCE: float = float(os.getenv('MAX_CONFIDENCE', '0.95'))
+    MAX_TOPICS: int = int(os.getenv('MAX_TOPICS', '100'))
+    TOPIC_EXTRACTION_RETRIES: int = int(os.getenv('TOPIC_EXTRACTION_RETRIES', '3'))
+    TOPIC_EXTRACTION_DELAY: int = int(os.getenv('TOPIC_EXTRACTION_DELAY', '2'))
+    
+    # Database path
+    DB_PATH: str = os.getenv('DB_PATH', 'tweets.db')
+    
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+        extra = "allow"  # Allow extra fields
     
     def get_database_uri(self) -> str:
         """Get the database URI."""
