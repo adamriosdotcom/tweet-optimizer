@@ -26,7 +26,7 @@ class TwitterDatabase:
         """Initialize MongoDB connection"""
         try:
             self.client = MongoClient(settings.MONGODB_URI)
-            self.db = self.client[settings.MONGODB_DB_NAME]
+            self.db = self.client[settings.MONGODB_DB]
             self.tweets = self.db.tweets
             
             # Create indexes for better performance
